@@ -23,17 +23,23 @@ pub(crate) struct Parser<'tokens, 'src> {
   tokens: &'tokens [Token<'src>],
   /// Index of the next un-parsed token
   next: usize,
+  /// Warnings encountered during parsing
+  warnings: Vec<Warning<'src>>,
 }
 
 impl<'tokens, 'src> Parser<'tokens, 'src> {
   /// Parse `tokens` into an `Module`
-  pub(crate) fn parse(tokens: &'tokens [Token<'src>]) -> CompilationResult<'src, Module<'src>> {
-    Self::new(tokens).parse_justfile()
+  pub(crate) fn parse(tokens: &'tokens [Token<'src>]) -> CompilationResult<'src, Parse<'src>> {
+    Self::new(tokens).parse_file()
   }
 
   /// Construct a new Paser from a token stream
   fn new(tokens: &'tokens [Token<'src>]) -> Parser<'tokens, 'src> {
-    Parser { next: 0, tokens }
+    Parser {
+      warnings: Vec::new(),
+      next: 0,
+      tokens,
+    }
   }
 
   fn error(
@@ -147,6 +153,20 @@ impl<'tokens, 'src> Parser<'tokens, 'src> {
   }
 
   /// Return an unexpected token error if the next token is not an EOL
+  fn accepted_eol(&mut self) -> CompilationResult<'src, bool> {
+    if self.next_are(&[Comment, Eol]) {
+      self.presume(Comment)?;
+      self.presume(Eol)?;
+      Ok(true)
+    } else if self.next_are(&[Comment, Eof]) {
+      self.presume(Comment)?;
+      Ok(true)
+    } else {
+      self.accepted(Eol)
+    }
+  }
+
+  /// Return an unexpected token error if the next token is not an EOL
   fn expect_eol(&mut self) -> CompilationResult<'src, ()> {
     self.accept(Comment)?;
 
@@ -155,6 +175,20 @@ impl<'tokens, 'src> Parser<'tokens, 'src> {
     }
 
     self.expect(Eol).map(|_| ()).expected(&[Eof])
+  }
+
+  /// Return an unexpected name error if the next token is not of kind
+  /// `Identifier` with lexeme `expected`.
+  fn expect_name(&mut self, expected: &'static str) -> CompilationResult<'src, ()> {
+    let identifier = self.expect(Identifier)?;
+
+    let found = identifier.lexeme();
+
+    if found != expected {
+      Err(identifier.error(CompilationErrorKind::UnexpectedName { found, expected }))
+    } else {
+      Ok(())
+    }
   }
 
   /// Return an internal error if the next token is not of kind `Identifier` with
@@ -253,10 +287,26 @@ impl<'tokens, 'src> Parser<'tokens, 'src> {
     Ok(self.accept(kind)?.is_some())
   }
 
-  /// Parse a justfile, consumes self
-  fn parse_justfile(mut self) -> CompilationResult<'src, Module<'src>> {
+  fn parse_file(mut self) -> CompilationResult<'src, Parse<'src>> {
+    let suite = self.parse_suite(false)?;
+
+    if self.next != self.tokens.len() {
+      return Err(self.internal_error(format!(
+        "Parse completed with {} unparsed tokens",
+        self.tokens.len() - self.next,
+      ))?);
+    }
+
+    Ok(Parse {
+      warnings: self.warnings,
+      suite,
+    })
+  }
+
+  /// Parse a suite, terminated with a dedent if `submodule`,
+  /// otherwise terminated by an eof
+  fn parse_suite(&mut self, submodule: bool) -> CompilationResult<'src, Suite<'src>> {
     let mut items = Vec::new();
-    let mut warnings = Vec::new();
 
     let mut doc = None;
 
@@ -271,14 +321,18 @@ impl<'tokens, 'src> Parser<'tokens, 'src> {
         Eol => {
           self.advance()?;
         }
-        Eof => {
+        Dedent if submodule => {
+          self.advance()?;
+          break;
+        }
+        Eof if !submodule => {
           self.advance()?;
           break;
         }
         Identifier => match next.lexeme() {
           keyword::ALIAS => {
             if self.next_are(&[Identifier, Identifier, Equals]) {
-              warnings.push(Warning::DeprecatedEquals {
+              self.warnings.push(Warning::DeprecatedEquals {
                 equals: self.get(2)?,
               });
               items.push(Item::Alias(self.parse_alias()?));
@@ -290,7 +344,7 @@ impl<'tokens, 'src> Parser<'tokens, 'src> {
           }
           keyword::EXPORT => {
             if self.next_are(&[Identifier, Identifier, Equals]) {
-              warnings.push(Warning::DeprecatedEquals {
+              self.warnings.push(Warning::DeprecatedEquals {
                 equals: self.get(2)?,
               });
               self.presume_name(keyword::EXPORT)?;
@@ -311,12 +365,14 @@ impl<'tokens, 'src> Parser<'tokens, 'src> {
           }
           _ => {
             if self.next_are(&[Identifier, Equals]) {
-              warnings.push(Warning::DeprecatedEquals {
+              self.warnings.push(Warning::DeprecatedEquals {
                 equals: self.get(1)?,
               });
               items.push(Item::Assignment(self.parse_assignment(false)?));
             } else if self.next_are(&[Identifier, ColonEquals]) {
               items.push(Item::Assignment(self.parse_assignment(false)?));
+            } else if self.next_are(&[Identifier, ColonColon]) {
+              items.push(Item::Submodule(self.parse_submodule()?));
             } else {
               items.push(Item::Recipe(self.parse_recipe(doc, false)?));
             }
@@ -336,14 +392,7 @@ impl<'tokens, 'src> Parser<'tokens, 'src> {
       }
     }
 
-    if self.next != self.tokens.len() {
-      Err(self.internal_error(format!(
-        "Parse completed with {} unparsed tokens",
-        self.tokens.len() - self.next,
-      ))?)
-    } else {
-      Ok(Module { items, warnings })
-    }
+    Ok(Suite { items })
   }
 
   /// Parse an alias, e.g `alias name := target`
@@ -367,6 +416,20 @@ impl<'tokens, 'src> Parser<'tokens, 'src> {
       export,
       value,
     })
+  }
+
+  /// Parse a submodule, e.g. `foo::`
+  fn parse_submodule(&mut self) -> CompilationResult<'src, UnresolvedSubmodule<'src>> {
+    let name = self.parse_name()?;
+    self.presume(ColonColon)?;
+    while self.accepted_eol()? {}
+    let items = if self.accepted(Indent)? {
+      self.parse_suite(true)?
+    } else {
+      Suite::new()
+    };
+
+    Ok(Submodule { name, items })
   }
 
   /// Parse an expression, e.g. `1 + 2`
@@ -625,7 +688,7 @@ impl<'tokens, 'src> Parser<'tokens, 'src> {
     self.presume_name(keyword::SET)?;
     let name = Name::from_identifier(self.presume(Identifier)?);
     self.presume(ColonEquals)?;
-    match name.lexeme() {
+    let value = match name.lexeme() {
       keyword::SHELL => {
         self.expect(BracketL)?;
 
@@ -652,15 +715,22 @@ impl<'tokens, 'src> Parser<'tokens, 'src> {
           .expect(BracketR)
           .expected(if comma { &[] } else { &[Comma] })?;
 
-        Ok(Set {
-          value: Setting::Shell(setting::Shell { command, arguments }),
-          name,
-        })
+        Setting::Shell(setting::Shell { command, arguments })
       }
-      _ => Err(name.error(CompilationErrorKind::UnknownSetting {
-        setting: name.lexeme(),
-      })),
-    }
+      keyword::MODULE_EXPERIMENT => {
+        self.expect_name(keyword::TRUE)?;
+        Setting::ModuleExperiment
+      }
+      _ => {
+        return Err(name.error(CompilationErrorKind::UnknownSetting {
+          setting: name.lexeme(),
+        }))
+      }
+    };
+
+    self.expect_eol()?;
+
+    Ok(Set { value, name })
   }
 }
 
@@ -1513,6 +1583,99 @@ mod tests {
     tree: (justfile (set shell "bash" "-cu" "-l")),
   }
 
+  test! {
+    name: set_module_experiment,
+    text: "set module-experiment := true",
+    tree: (justfile (set module_experiment)),
+  }
+
+  test! {
+    name: set_module_experiment_eol,
+    text: "set module-experiment := true\n",
+    tree: (justfile (set module_experiment)),
+  }
+
+  test! {
+    name: set_module_experiment_comment,
+    text: "set module-experiment := true # foo",
+    tree: (justfile (set module_experiment)),
+  }
+
+  test! {
+    name: set_module_experiment_comment_eol,
+    text: "set module-experiment := true # foo\n",
+    tree: (justfile (set module_experiment)),
+  }
+
+  test! {
+    name: submodule_empty,
+    text: "foo::",
+    tree: (justfile (submodule foo)),
+  }
+
+  test! {
+    name: submodule_recipe,
+    text: "
+      foo::
+        bar:
+    ",
+    tree: (justfile (submodule foo (recipe bar))),
+  }
+
+  test! {
+    name: submodule_blank_recipe,
+    text: "
+      foo::
+
+        bar:
+    ",
+    tree: (justfile (submodule foo (recipe bar))),
+  }
+
+  test! {
+    name: submodule_blank_recipe_blank_recipe,
+    text: "
+      foo::
+
+
+        bar:
+
+
+        baz:
+
+    ",
+    tree: (justfile (submodule foo (recipe bar) (recipe baz))),
+  }
+
+  test! {
+    name: submodule_nested,
+    text: "
+      foo::
+        x := 'hello'
+
+        bar::
+          baz:
+    ",
+    tree: (justfile
+      (submodule foo
+        (assignment x "hello")
+        (submodule bar
+          (recipe baz)
+        )
+      )
+    ),
+  }
+
+  error! {
+    name:   alias_no_eol,
+    input:  "alias x := y alias a := b",
+    offset: 13,
+    line:   0,
+    column: 13,
+    width:  5,
+    kind:   UnexpectedToken { expected: vec![Eof, Eol], found: Identifier },
+  }
+
   error! {
     name: alias_syntax_multiple_rhs,
     input: "alias foo = bar baz",
@@ -1761,6 +1924,29 @@ mod tests {
     width:  5,
     kind:   UnknownSetting {
       setting: "shall",
+    },
+  }
+
+  error! {
+    name:   set_module_experiment_string,
+    input:  "set module-experiment := 'true'",
+    offset: 25,
+    line:   0,
+    column: 25,
+    width:  6,
+    kind:   UnexpectedToken { expected: vec![Identifier], found: StringRaw },
+  }
+
+  error! {
+    name:   set_module_experiment_false,
+    input:  "set module-experiment := false",
+    offset: 25,
+    line:   0,
+    column: 25,
+    width:  5,
+    kind:   UnexpectedName {
+      found:    "false",
+      expected: "true",
     },
   }
 

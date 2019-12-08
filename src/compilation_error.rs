@@ -16,15 +16,45 @@ impl Display for CompilationError<'_> {
     write!(f, "{}", message.prefix())?;
 
     match self.kind {
-      AliasShadowsRecipe { alias, recipe_line } => {
-        writeln!(
-          f,
-          "Alias `{}` defined on line {} shadows recipe `{}` defined on line {}",
-          alias,
-          self.token.line.ordinal(),
-          alias,
-          recipe_line.ordinal(),
-        )?;
+      Collision {
+        first,
+        name,
+        namespace,
+        kind,
+        first_kind,
+      } => {
+        // TODO:
+        // - integration tests for these
+        // - remove other error variants
+        if kind == first_kind {
+          writeln!(
+            f,
+            "{} `{}` first {} on line {} is {} on line {}",
+            Capitalized(kind),
+            name,
+            if namespace == Namespace::Setting {
+              "set"
+            } else {
+              "defined"
+            },
+            first.ordinal(),
+            if namespace == Namespace::Setting {
+              "set again"
+            } else {
+              "redefined"
+            },
+            self.token.line.ordinal(),
+          )?;
+        } else {
+          writeln!(
+            f,
+            "{} `{}` conflicts with {} first defined on line {}",
+            Capitalized(kind),
+            name,
+            first_kind,
+            first.ordinal(),
+          )?;
+        }
       }
       CircularRecipeDependency { recipe, ref circle } => {
         if circle.len() == 2 {
@@ -53,7 +83,17 @@ impl Display for CompilationError<'_> {
           )?;
         }
       }
-
+      ForbiddenModule { module } => {
+        writeln!(
+          f,
+          "Found module `{}` without `module-experiment` setting enabled",
+          module,
+        )?;
+        writeln!(
+          f,
+          "Use `set module-experiment := true` to enable modules. Modules are experimental and may change, break, or be removed at any time.",
+        )?;
+      }
       InvalidEscapeSequence { character } => {
         let representation = match character {
           '`' => r"\`".to_string(),
@@ -71,41 +111,18 @@ impl Display for CompilationError<'_> {
           recipe, parameter
         )?;
       }
-      DuplicateVariable { variable } => {
-        writeln!(f, "Variable `{}` has multiple definitions", variable)?;
+      UnexpectedName { expected, found } => {
+        writeln!(
+          f,
+          "Expected identifier `{}` but found `{}`",
+          expected, found,
+        )?;
       }
       UnexpectedToken {
         ref expected,
         found,
       } => {
         writeln!(f, "Expected {}, but found {}", List::or(expected), found)?;
-      }
-      DuplicateAlias { alias, first } => {
-        writeln!(
-          f,
-          "Alias `{}` first defined on line {} is redefined on line {}",
-          alias,
-          first.ordinal(),
-          self.token.line.ordinal(),
-        )?;
-      }
-      DuplicateRecipe { recipe, first } => {
-        writeln!(
-          f,
-          "Recipe `{}` first defined on line {} is redefined on line {}",
-          recipe,
-          first.ordinal(),
-          self.token.line.ordinal()
-        )?;
-      }
-      DuplicateSet { setting, first } => {
-        writeln!(
-          f,
-          "Setting `{}` first set on line {} is redefined on line {}",
-          setting,
-          first.ordinal(),
-          self.token.line.ordinal(),
-        )?;
       }
       DependencyArgumentCountMismatch {
         dependency,

@@ -2,59 +2,95 @@ use crate::common::*;
 
 use CompilationErrorKind::*;
 
-pub(crate) struct Analyzer<'src> {
-  recipes: Table<'src, UnresolvedRecipe<'src>>,
-  assignments: Table<'src, Assignment<'src>>,
-  aliases: Table<'src, Alias<'src, Name<'src>>>,
-  sets: Table<'src, Set<'src>>,
-}
+// TODO:
+// - test duplicate submodule error message
 
-impl<'src> Analyzer<'src> {
-  pub(crate) fn analyze(module: Module<'src>) -> CompilationResult<'src, Justfile> {
+pub(crate) struct Analyzer;
+
+impl<'src> Analyzer {
+  pub(crate) fn analyze(parse: Parse<'src>) -> CompilationResult<'src, Justfile> {
     let analyzer = Analyzer::new();
 
-    analyzer.justfile(module)
+    analyzer.justfile(parse)
   }
 
-  pub(crate) fn new() -> Analyzer<'src> {
-    Analyzer {
-      recipes: empty(),
-      assignments: empty(),
-      aliases: empty(),
-      sets: empty(),
+  pub(crate) fn new() -> Analyzer {
+    Analyzer
+  }
+
+  pub(crate) fn justfile(mut self, parse: Parse<'src>) -> CompilationResult<'src, Justfile<'src>> {
+    let root = self.analyze_suite(parse.suite)?;
+
+    Ok(Justfile {
+      warnings: parse.warnings,
+      root,
+    })
+  }
+
+  pub(crate) fn analyze_suite(
+    &mut self,
+    suite: Suite<'src>,
+  ) -> CompilationResult<'src, Module<'src>> {
+    {
+      let mut assignment_table: Table<&Item> = Table::new();
+      let mut recipe_table: Table<&Item> = Table::new();
+      let mut setting_table: Table<&Item> = Table::new();
+
+      for item in &suite.items {
+        let namespace = item.namespace();
+
+        let table = match namespace {
+          Namespace::Assignment => &mut assignment_table,
+          Namespace::Recipe => &mut recipe_table,
+          Namespace::Setting => &mut setting_table,
+        };
+
+        if let Some(first) = table.get(item.key()) {
+          return Err(item.name().error(Collision {
+            name: item.name().lexeme(),
+            kind: item.kind(),
+            first: first.name().line,
+            first_kind: first.kind(),
+            namespace,
+          }));
+        }
+
+        table.insert(item);
+      }
     }
-  }
 
-  pub(crate) fn justfile(
-    mut self,
-    module: Module<'src>,
-  ) -> CompilationResult<'src, Justfile<'src>> {
-    for item in module.items {
+    let mut items = Items::new();
+
+    for item in suite.items {
       match item {
         Item::Alias(alias) => {
-          self.analyze_alias(&alias)?;
-          self.aliases.insert(alias);
+          items.aliases.insert(alias);
         }
         Item::Assignment(assignment) => {
-          self.analyze_assignment(&assignment)?;
-          self.assignments.insert(assignment);
+          items.assignments.insert(assignment);
+        }
+        Item::Submodule(submodule) => {
+          items.submodules.insert(submodule);
         }
         Item::Recipe(recipe) => {
           self.analyze_recipe(&recipe)?;
-          self.recipes.insert(recipe);
+          items.recipes.insert(recipe);
         }
         Item::Set(set) => {
-          self.analyze_set(&set)?;
-          self.sets.insert(set);
+          items.sets.insert(set);
         }
       }
     }
 
-    let assignments = self.assignments;
+    self.resolve_items(items)
+  }
+
+  fn resolve_items(&mut self, mut items: Items<'src>) -> CompilationResult<'src, Module<'src>> {
+    let assignments = items.assignments;
 
     AssignmentResolver::resolve_assignments(&assignments)?;
 
-    let recipes = RecipeResolver::resolve_recipes(self.recipes, &assignments)?;
+    let recipes = RecipeResolver::resolve_recipes(items.recipes, &assignments)?;
 
     for recipe in recipes.values() {
       for parameter in &recipe.parameters {
@@ -67,38 +103,45 @@ impl<'src> Analyzer<'src> {
     }
 
     let mut aliases = Table::new();
-    while let Some(alias) = self.aliases.pop() {
+    while let Some(alias) = items.aliases.pop() {
       aliases.insert(Self::resolve_alias(&recipes, alias)?);
     }
 
     let mut settings = Settings::new();
 
-    for (_, set) in self.sets.into_iter() {
+    for (_, set) in items.sets.into_iter() {
       match set.value {
         Setting::Shell(shell) => {
           assert!(settings.shell.is_none());
           settings.shell = Some(shell);
         }
+        Setting::ModuleExperiment => {
+          assert!(!settings.module_experiment);
+          settings.module_experiment = true;
+        }
       }
     }
 
-    Ok(Justfile {
-      warnings: module.warnings,
+    let mut submodules = Table::new();
+    while let Some(submodule) = items.submodules.pop() {
+      if !settings.module_experiment {
+        return Err(submodule.name.error(CompilationErrorKind::ForbiddenModule {
+          module: submodule.name.lexeme(),
+        }));
+      }
+      submodules.insert(self.resolve_submodule(submodule)?);
+    }
+
+    Ok(Module {
       aliases,
       assignments,
       recipes,
       settings,
+      submodules,
     })
   }
 
   fn analyze_recipe(&self, recipe: &UnresolvedRecipe<'src>) -> CompilationResult<'src, ()> {
-    if let Some(original) = self.recipes.get(recipe.name.lexeme()) {
-      return Err(recipe.name.token().error(DuplicateRecipe {
-        recipe: original.name(),
-        first: original.line_number(),
-      }));
-    }
-
     let mut parameters = BTreeSet::new();
     let mut passed_default = false;
 
@@ -143,51 +186,11 @@ impl<'src> Analyzer<'src> {
     Ok(())
   }
 
-  fn analyze_assignment(&self, assignment: &Assignment<'src>) -> CompilationResult<'src, ()> {
-    if self.assignments.contains_key(assignment.name.lexeme()) {
-      return Err(assignment.name.token().error(DuplicateVariable {
-        variable: assignment.name.lexeme(),
-      }));
-    }
-    Ok(())
-  }
-
-  fn analyze_alias(&self, alias: &Alias<'src, Name<'src>>) -> CompilationResult<'src, ()> {
-    let name = alias.name.lexeme();
-
-    if let Some(original) = self.aliases.get(name) {
-      return Err(alias.name.token().error(DuplicateAlias {
-        alias: name,
-        first: original.line_number(),
-      }));
-    }
-
-    Ok(())
-  }
-
-  fn analyze_set(&self, set: &Set<'src>) -> CompilationResult<'src, ()> {
-    if let Some(original) = self.sets.get(set.name.lexeme()) {
-      return Err(set.name.error(DuplicateSet {
-        setting: original.name.lexeme(),
-        first: original.name.line,
-      }));
-    }
-
-    Ok(())
-  }
-
   fn resolve_alias(
     recipes: &Table<'src, Rc<Recipe<'src>>>,
     alias: Alias<'src, Name<'src>>,
   ) -> CompilationResult<'src, Alias<'src>> {
     let token = alias.name.token();
-    // Make sure the alias doesn't conflict with any recipe
-    if let Some(recipe) = recipes.get(alias.name.lexeme()) {
-      return Err(token.error(AliasShadowsRecipe {
-        alias: alias.name.lexeme(),
-        recipe_line: recipe.line_number(),
-      }));
-    }
 
     // Make sure the target recipe exists
     match recipes.get(alias.target.lexeme()) {
@@ -197,6 +200,16 @@ impl<'src> Analyzer<'src> {
         target: alias.target.lexeme(),
       })),
     }
+  }
+
+  fn resolve_submodule(
+    &mut self,
+    submodule: UnresolvedSubmodule<'src>,
+  ) -> CompilationResult<'src, Submodule<'src>> {
+    Ok(Submodule {
+      name: submodule.name,
+      items: self.analyze_suite(submodule.items)?,
+    })
   }
 }
 
@@ -211,7 +224,13 @@ mod tests {
     line: 1,
     column: 6,
     width: 3,
-    kind: DuplicateAlias { alias: "foo", first: 0 },
+    kind: Collision {
+      first: 0,
+      first_kind: "alias",
+      kind: "alias",
+      name: "foo",
+      namespace: Namespace::Recipe,
+    },
   }
 
   analysis_error! {
@@ -227,11 +246,17 @@ mod tests {
   analysis_error! {
     name: alias_shadows_recipe_before,
     input: "bar: \n  echo bar\nalias foo = bar\nfoo:\n  echo foo",
-    offset: 23,
-    line: 2,
-    column: 6,
+    offset: 33,
+    line: 3,
+    column: 0,
     width: 3,
-    kind: AliasShadowsRecipe {alias: "foo", recipe_line: 3},
+    kind: Collision {
+      first: 2,
+      first_kind: "alias",
+      kind: "recipe",
+      name: "foo",
+      namespace: Namespace::Recipe,
+    },
   }
 
   analysis_error! {
@@ -241,7 +266,13 @@ mod tests {
     line: 2,
     column: 6,
     width: 3,
-    kind: AliasShadowsRecipe { alias: "foo", recipe_line: 0 },
+    kind: Collision {
+      first: 0,
+      first_kind: "recipe",
+      kind: "alias",
+      name: "foo",
+      namespace: Namespace::Recipe,
+    },
   }
 
   analysis_error! {
@@ -291,17 +322,48 @@ mod tests {
     line:   2,
     column: 0,
     width:  1,
-    kind:   DuplicateRecipe{recipe: "a", first: 0},
+    kind: Collision {
+      first: 0,
+      first_kind: "recipe",
+      kind: "recipe",
+      name: "a",
+      namespace: Namespace::Recipe,
+    },
   }
 
   analysis_error! {
-    name:   duplicate_variable,
+    name:   duplicate_assignment,
     input:  "a = \"0\"\na = \"0\"",
     offset:  8,
-    line:   1,
-    column: 0,
-    width:  1,
-    kind:   DuplicateVariable{variable: "a"},
+    line:    1,
+    column:  0,
+    width:   1,
+    kind: Collision {
+      first: 0,
+      first_kind: "variable",
+      kind: "variable",
+      name: "a",
+      namespace: Namespace::Assignment,
+    },
+  }
+
+  analysis_error! {
+    name:   duplicate_setting,
+    input:  "
+      set module-experiment := true
+      set module-experiment := true
+    ",
+    offset:  34,
+    line:    1,
+    column:  4,
+    width:   17,
+    kind: Collision {
+      first: 0,
+      first_kind: "setting",
+      kind: "setting",
+      name: "module-experiment",
+      namespace: Namespace::Setting,
+    },
   }
 
   analysis_error! {

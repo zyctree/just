@@ -20,12 +20,6 @@ impl<T: Display, I: Iterator<Item = T> + Clone> List<T, I> {
     }
   }
 
-  pub fn or_ticked<II: IntoIterator<Item = T, IntoIter = I>>(
-    values: II,
-  ) -> List<Enclosure<T>, impl Iterator<Item = Enclosure<T>> + Clone> {
-    List::or(values.into_iter().map(Enclosure::tick))
-  }
-
   pub fn and_ticked<II: IntoIterator<Item = T, IntoIter = I>>(
     values: II,
   ) -> List<Enclosure<T>, impl Iterator<Item = Enclosure<T>> + Clone> {
@@ -94,17 +88,6 @@ mod tests {
     assert_eq!("1 and 2", List::and(&[1, 2]).to_string());
     assert_eq!("1, 2, and 3", List::and(&[1, 2, 3]).to_string());
     assert_eq!("1, 2, 3, and 4", List::and(&[1, 2, 3, 4]).to_string());
-  }
-
-  #[test]
-  fn or_ticked() {
-    assert_eq!("`1`", List::or_ticked(&[1]).to_string());
-    assert_eq!("`1` or `2`", List::or_ticked(&[1, 2]).to_string());
-    assert_eq!("`1`, `2`, or `3`", List::or_ticked(&[1, 2, 3]).to_string());
-    assert_eq!(
-      "`1`, `2`, `3`, or `4`",
-      List::or_ticked(&[1, 2, 3, 4]).to_string()
-    );
   }
 
   #[test]

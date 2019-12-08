@@ -2,10 +2,6 @@ use crate::common::*;
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum CompilationErrorKind<'src> {
-  AliasShadowsRecipe {
-    alias: &'src str,
-    recipe_line: usize,
-  },
   CircularRecipeDependency {
     recipe: &'src str,
     circle: Vec<&'src str>,
@@ -14,32 +10,27 @@ pub(crate) enum CompilationErrorKind<'src> {
     variable: &'src str,
     circle: Vec<&'src str>,
   },
+  Collision {
+    first: usize,
+    first_kind: &'static str,
+    kind: &'static str,
+    name: &'src str,
+    namespace: Namespace,
+  },
   DependencyArgumentCountMismatch {
     dependency: &'src str,
     found: usize,
     min: usize,
     max: usize,
   },
-  DuplicateAlias {
-    alias: &'src str,
-    first: usize,
-  },
   DuplicateParameter {
     recipe: &'src str,
     parameter: &'src str,
   },
-  DuplicateRecipe {
-    recipe: &'src str,
-    first: usize,
-  },
-  DuplicateVariable {
-    variable: &'src str,
-  },
-  DuplicateSet {
-    setting: &'src str,
-    first: usize,
-  },
   ExtraLeadingWhitespace,
+  ForbiddenModule {
+    module: &'src str,
+  },
   FunctionArgumentCountMismatch {
     function: &'src str,
     found: usize,
@@ -70,6 +61,10 @@ pub(crate) enum CompilationErrorKind<'src> {
   UndefinedVariable {
     variable: &'src str,
   },
+  UnexpectedName {
+    expected: &'static str,
+    found: &'src str,
+  },
   UnexpectedToken {
     expected: Vec<TokenKind>,
     found: TokenKind,
@@ -85,12 +80,12 @@ pub(crate) enum CompilationErrorKind<'src> {
   UnknownFunction {
     function: &'src str,
   },
-  UnknownStartOfToken,
   UnknownSetting {
     setting: &'src str,
   },
+  UnknownStartOfToken,
   UnpairedCarriageReturn,
+  UnterminatedBacktick,
   UnterminatedInterpolation,
   UnterminatedString,
-  UnterminatedBacktick,
 }

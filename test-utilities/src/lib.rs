@@ -22,20 +22,7 @@ pub fn assert_stdout(output: &Output, stdout: &str) {
 
 pub fn unindent(text: &str) -> String {
   // find line start and end indices
-  let mut lines = Vec::new();
-  let mut start = 0;
-  for (i, c) in text.char_indices() {
-    if c == '\n' {
-      let end = i + 1;
-      lines.push((start, end));
-      start = end;
-    }
-  }
-
-  // if the text isn't newline-terminated, add the final line
-  if text.chars().last() != Some('\n') {
-    lines.push((start, text.len()));
-  }
+  let lines = lines(text);
 
   // find the longest common indentation
   let mut common_indentation = None;
@@ -185,7 +172,6 @@ fn indentation(line: &str) -> &str {
       return &line[0..i];
     }
   }
-
   line
 }
 
@@ -205,14 +191,29 @@ fn blank(line: &str) -> bool {
   true
 }
 
-fn common<'s>(a: &'s str, b: &'s str) -> &'s str {
-  for ((i, ac), bc) in a.char_indices().zip(b.chars()) {
-    if ac != bc {
-      return &a[0..i];
+fn common<'a>(a: &'a str, b: &str) -> &'a str {
+  let end = a
+    .char_indices()
+    .zip(b.chars())
+    .filter(|((_, a), b)| a == b)
+    .map(|((i, a), _)| i + a.len_utf8())
+    .last()
+    .unwrap_or(0);
+
+  &a[..end]
+}
+
+fn lines(text: &str) -> Vec<(usize, usize)> {
+  let mut start = 0;
+  let mut lines = Vec::new();
+  for (i, c) in text.char_indices() {
+    if c == '\n' || i == text.len() - 1 {
+      let end = i + 1;
+      lines.push((start, end));
+      start = end;
     }
   }
-
-  a
+  lines
 }
 
 #[cfg(test)]
@@ -226,6 +227,7 @@ mod tests {
     assert_eq!(unindent(""), "");
     assert_eq!(unindent("  foo\n  bar"), "foo\nbar");
     assert_eq!(unindent("  foo\n  bar\n\n"), "foo\nbar\n");
+    assert_eq!(unindent("  foo::\n#"), "  foo::\n#",);
   }
 
   #[test]
@@ -250,6 +252,15 @@ mod tests {
     assert_eq!(common("foo", "bar"), "");
     assert_eq!(common("", ""), "");
     assert_eq!(common("", "bar"), "");
+    assert_eq!(common("foobar", "foo"), "foo");
+  }
+
+  #[test]
+  fn line() {
+    assert_eq!(lines("foo"), vec![(0, 3)]);
+    assert_eq!(lines("foo\n"), vec![(0, 4)]);
+    assert_eq!(lines("foo\nbar"), vec![(0, 4), (4, 7)]);
+    assert_eq!(lines(""), vec![]);
   }
 
   #[test]

@@ -7,11 +7,19 @@ pub(crate) trait Node<'src> {
   fn tree(&self) -> Tree<'src>;
 }
 
-impl<'src> Node<'src> for Module<'src> {
+impl<'src> Node<'src> for Parse<'src> {
   fn tree(&self) -> Tree<'src> {
     Tree::atom("justfile")
-      .extend(self.items.iter().map(|item| item.tree()))
+      .extend(self.suite.items.iter().map(|item| item.tree()))
       .extend(self.warnings.iter().map(|warning| warning.tree()))
+  }
+}
+
+impl<'src> Node<'src> for UnresolvedSubmodule<'src> {
+  fn tree(&self) -> Tree<'src> {
+    Tree::atom("submodule")
+      .push(Tree::atom(self.name.lexeme()))
+      .extend(self.items.items.iter().map(|item| item.tree()))
   }
 }
 
@@ -20,6 +28,7 @@ impl<'src> Node<'src> for Item<'src> {
     match self {
       Item::Alias(alias) => alias.tree(),
       Item::Assignment(assignment) => assignment.tree(),
+      Item::Submodule(module) => module.tree(),
       Item::Recipe(recipe) => recipe.tree(),
       Item::Set(set) => set.tree(),
     }
@@ -166,7 +175,7 @@ impl<'src> Node<'src> for Set<'src> {
   fn tree(&self) -> Tree<'src> {
     let mut set = Tree::atom(keyword::SET);
 
-    set.push_mut(self.name.lexeme());
+    set.push_mut(self.name.lexeme().replace('-', "_"));
 
     use Setting::*;
     match &self.value {
@@ -176,6 +185,7 @@ impl<'src> Node<'src> for Set<'src> {
           set.push_mut(Tree::string(&argument.cooked));
         }
       }
+      ModuleExperiment => {}
     }
 
     set

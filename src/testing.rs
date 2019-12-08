@@ -47,7 +47,9 @@ pub(crate) fn analysis_error(
   length: usize,
   kind: CompilationErrorKind,
 ) {
-  let tokens = Lexer::lex(src).expect("Lexing failed in parse test...");
+  let src = unindent(src);
+
+  let tokens = Lexer::lex(&src).expect("Lexing failed in parse test...");
 
   let module = Parser::parse(&tokens).expect("Parsing failed in analysis test...");
 
@@ -57,7 +59,7 @@ pub(crate) fn analysis_error(
       let want = CompilationError {
         token: Token {
           kind: have.token.kind,
-          src,
+          src: &src,
           offset,
           line,
           column,

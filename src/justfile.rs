@@ -1,35 +1,83 @@
 use crate::common::*;
 
+// TODO:
+// - check that eols are actually expected
+//   - recipe
+//   - alias
+//   - assignment
+//   - export
+//   - setting
+//   - module
+// - check that no functional change without module experiment
+// - add tests for current functionality
+//
+// - make issue with todo list
+// - consider switching to {} for modules
+// - make evaluate work with submodules
+// - make list work with submodules
+// - think about other subcommands
+// - make setting inheritance work
+// - make first recipe default work with submodules
+// - make variable reference in submodules work
+// - make aliases work with submodules
+//
+// modules are almost totally independant:
+// - they cannot access recipes or assignments outside of that module
+// - they *can* access settings. Settings inherit from parent module, and can be overridden
+// - a module and a recipe cannot have the same name
+//
+// - allow reference values in parent modules
+// - allow depending on recipes in parent module
+// - allow depending on recipes in child modules
+// - allow depending on recipes is adjacent modules (root::foo::bar, super::foo::bar)
+//
+// foo::
+//
+// 	bar:
+// 		echo bar
+//
+// 	baz:
+// 		echo baz
+//
+//  foo::
+//
+//  - inline modules
+//
+//  mod foo ;
+//
+// foo:: "bar"
+//
+//  later:
+//  - out-of-line modules w/path to file (add source-loader, load-mid parse, or resolve)
+//  - out-of-line modules w/path to directory
+//  - out of line modules w/no suite
+//
+//  - finish modules / shitcan modules
+//  - start working on torrent creator
+
 #[derive(Debug, PartialEq)]
 pub(crate) struct Justfile<'src> {
-  pub(crate) recipes: Table<'src, Rc<Recipe<'src>>>,
-  pub(crate) assignments: Table<'src, Assignment<'src>>,
-  pub(crate) aliases: Table<'src, Alias<'src>>,
-  pub(crate) settings: Settings<'src>,
+  pub(crate) root: Module<'src>,
   pub(crate) warnings: Vec<Warning<'src>>,
 }
 
-impl<'src> Justfile<'src> {
+impl<'src: 'run, 'run> Justfile<'src> {
   pub(crate) fn first(&self) -> Option<&Recipe> {
-    let mut first: Option<&Recipe<Dependency>> = None;
-    for recipe in self.recipes.values() {
-      if let Some(first_recipe) = first {
-        if recipe.line_number() < first_recipe.line_number() {
-          first = Some(recipe)
-        }
-      } else {
-        first = Some(recipe);
-      }
-    }
-    first
+    self
+      .root
+      .recipes
+      .values()
+      .map(Rc::as_ref)
+      .min_by_key(|recipe| recipe.line_number())
   }
 
   pub(crate) fn count(&self) -> usize {
-    self.recipes.len()
+    self.root.recipes.len()
   }
 
   pub(crate) fn suggest(&self, name: &str) -> Option<&'src str> {
     let mut suggestions = self
+      .root
       .recipes
       .keys()
       .map(|suggestion| (edit_distance(suggestion, name), suggestion))
@@ -44,41 +92,12 @@ impl<'src> Justfile<'src> {
   }
 
   pub(crate) fn run(
-    &'src self,
-    config: &'src Config,
-    working_directory: &'src Path,
-    overrides: &'src BTreeMap<String, String>,
-    arguments: &'src [String],
-  ) -> RunResult<'src, ()> {
-    let argvec: Vec<&str> = if !arguments.is_empty() {
-      arguments.iter().map(|argument| argument.as_str()).collect()
-    } else if let Some(recipe) = self.first() {
-      let min_arguments = recipe.min_arguments();
-      if min_arguments > 0 {
-        return Err(RuntimeError::DefaultRecipeRequiresArguments {
-          recipe: recipe.name.lexeme(),
-          min_arguments,
-        });
-      }
-      vec![recipe.name()]
-    } else {
-      return Err(RuntimeError::NoRecipes);
-    };
-
-    let arguments = argvec.as_slice();
-
-    let unknown_overrides = overrides
-      .keys()
-      .filter(|name| !self.assignments.contains_key(name.as_str()))
-      .map(|name| name.as_str())
-      .collect::<Vec<&str>>();
-
-    if !unknown_overrides.is_empty() {
-      return Err(RuntimeError::UnknownOverrides {
-        overrides: unknown_overrides,
-      });
-    }
-
+    &'run self,
+    config: &'run Config,
+    working_directory: &'run Path,
+    overrides: &'run BTreeMap<String, String>,
+    arguments: &'run [String],
+  ) -> RunResult<'run, ()> {
     let dotenv = load_dotenv()?;
 
     let scope = {
@@ -86,7 +105,7 @@ impl<'src> Justfile<'src> {
       let mut unknown_overrides = Vec::new();
 
       for (name, value) in overrides {
-        if let Some(assignment) = self.assignments.get(name) {
+        if let Some(assignment) = self.root.assignments.get(name) {
           scope.bind(assignment.export, assignment.name, value.clone());
         } else {
           unknown_overrides.push(name.as_ref());
@@ -100,11 +119,11 @@ impl<'src> Justfile<'src> {
       }
 
       Evaluator::evaluate_assignments(
-        &self.assignments,
+        &self.root.assignments,
         config,
         &dotenv,
         scope,
-        &self.settings,
+        &self.root.settings,
         working_directory,
       )?
     };
@@ -124,81 +143,70 @@ impl<'src> Justfile<'src> {
           binding.value
         );
       }
+
       return Ok(());
     }
 
-    let mut missing = vec![];
-    let mut grouped = vec![];
-    let mut rest = arguments;
-
-    while let Some((argument, mut tail)) = rest.split_first() {
-      if let Some(recipe) = self.get_recipe(argument) {
-        if recipe.parameters.is_empty() {
-          grouped.push((recipe, &tail[0..0]));
-        } else {
-          let argument_range = recipe.argument_range();
-          let argument_count = cmp::min(tail.len(), recipe.max_arguments());
-          if !argument_range.range_contains(&argument_count) {
-            return Err(RuntimeError::ArgumentCountMismatch {
-              recipe: recipe.name(),
-              parameters: recipe.parameters.iter().collect(),
-              found: tail.len(),
-              min: recipe.min_arguments(),
-              max: recipe.max_arguments(),
-            });
-          }
-          grouped.push((recipe, &tail[0..argument_count]));
-          tail = &tail[argument_count..];
-        }
-      } else {
-        missing.push(*argument);
+    let argvec: Vec<&str> = if !arguments.is_empty() {
+      arguments.iter().map(|argument| argument.as_str()).collect()
+    } else if let Some(recipe) = self.first() {
+      let min_arguments = recipe.min_arguments();
+      if min_arguments > 0 {
+        return Err(RuntimeError::DefaultRecipeRequiresArguments {
+          recipe: recipe.name.lexeme(),
+          min_arguments,
+        });
       }
-      rest = tail;
-    }
+      vec![recipe.name()]
+    } else {
+      return Err(RuntimeError::NoRecipes);
+    };
 
-    if !missing.is_empty() {
-      let suggestion = if missing.len() == 1 {
-        self.suggest(missing.first().unwrap())
-      } else {
-        None
-      };
-      return Err(RuntimeError::UnknownRecipes {
-        recipes: missing,
-        suggestion,
+    let arguments = argvec.as_slice();
+
+    let unknown_overrides = overrides
+      .keys()
+      .filter(|name| !self.root.assignments.contains_key(name.as_str()))
+      .map(|name| name.as_str())
+      .collect::<Vec<&str>>();
+
+    if !unknown_overrides.is_empty() {
+      return Err(RuntimeError::UnknownOverrides {
+        overrides: unknown_overrides,
       });
     }
+    let groups = self.root.groups(arguments)?;
 
     let context = RecipeContext {
-      settings: &self.settings,
+      settings: &self.root.settings,
       config,
       scope,
       working_directory,
     };
 
     let mut ran = BTreeSet::new();
-    for (recipe, arguments) in grouped {
-      self.run_recipe(&context, recipe, arguments, &dotenv, &mut ran)?
+    for Group { recipe, arguments } in groups {
+      Self::run_recipe(&context, recipe, arguments, &dotenv, &mut ran)?
     }
 
     Ok(())
   }
 
   pub(crate) fn get_alias(&self, name: &str) -> Option<&Alias> {
-    self.aliases.get(name)
+    self.root.aliases.get(name)
   }
 
   pub(crate) fn get_recipe(&self, name: &str) -> Option<&Recipe<'src>> {
-    if let Some(recipe) = self.recipes.get(name) {
+    if let Some(recipe) = self.root.recipes.get(name) {
       Some(recipe)
-    } else if let Some(alias) = self.aliases.get(name) {
+    } else if let Some(alias) = self.root.aliases.get(name) {
       Some(alias.target.as_ref())
     } else {
       None
     }
   }
 
-  fn run_recipe<'run>(
-    &self,
+  fn run_recipe(
     context: &'run RecipeContext<'src, 'run>,
     recipe: &Recipe<'src>,
     arguments: &[&'run str],
@@ -236,7 +244,7 @@ impl<'src> Justfile<'src> {
           .skip(1)
           .map(String::as_ref)
           .collect::<Vec<&str>>();
-        self.run_recipe(context, recipe, &arguments, dotenv, ran)?;
+        Self::run_recipe(context, recipe, &arguments, dotenv, ran)?;
       }
     }
 
@@ -255,8 +263,8 @@ impl<'src> Justfile<'src> {
 
 impl<'src> Display for Justfile<'src> {
   fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-    let mut items = self.recipes.len() + self.assignments.len() + self.aliases.len();
-    for (name, assignment) in &self.assignments {
+    let mut items = self.root.recipes.len() + self.root.assignments.len() + self.root.aliases.len();
+    for (name, assignment) in &self.root.assignments {
       if assignment.export {
         write!(f, "export ")?;
       }
@@ -266,14 +274,14 @@ impl<'src> Display for Justfile<'src> {
         write!(f, "\n\n")?;
       }
     }
-    for alias in self.aliases.values() {
+    for alias in self.root.aliases.values() {
       write!(f, "{}", alias)?;
       items -= 1;
       if items != 0 {
         write!(f, "\n\n")?;
       }
     }
-    for recipe in self.recipes.values() {
+    for recipe in self.root.recipes.values() {
       write!(f, "{}", recipe)?;
       items -= 1;
       if items != 0 {
@@ -292,16 +300,16 @@ mod tests {
   use RuntimeError::*;
 
   run_error! {
-    name: unknown_recipes,
+    name: unknown_recipe,
     src: "a:\nb:\nc:",
     args: ["a", "x", "y", "z"],
-    error: UnknownRecipes {
-      recipes,
+    error: UnknownRecipe {
+      recipe,
       suggestion,
     },
     check: {
-      assert_eq!(recipes, &["x", "y", "z"]);
-      assert_eq!(suggestion, None);
+      assert_eq!(recipe, "x");
+      assert_eq!(suggestion, Some("a"));
     }
   }
 

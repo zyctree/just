@@ -54,8 +54,8 @@ pub(crate) enum RuntimeError<'src> {
   UnknownOverrides {
     overrides: Vec<&'src str>,
   },
-  UnknownRecipes {
-    recipes: Vec<&'src str>,
+  UnknownRecipe {
+    recipe: &'src str,
     suggestion: Option<&'src str>,
   },
   Unknown {
@@ -106,16 +106,8 @@ impl<'src> Display for RuntimeError<'src> {
     write!(f, "{}", message.prefix())?;
 
     match self {
-      UnknownRecipes {
-        recipes,
-        suggestion,
-      } => {
-        write!(
-          f,
-          "Justfile does not contain {} {}.",
-          Count("recipe", recipes.len()),
-          List::or_ticked(recipes),
-        )?;
+      UnknownRecipe { recipe, suggestion } => {
+        write!(f, "Justfile does not contain recipe `{}`", recipe)?;
         if let Some(suggestion) = *suggestion {
           write!(f, "\nDid you mean `{}`?", suggestion)?;
         }

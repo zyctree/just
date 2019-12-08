@@ -1,8 +1,9 @@
 use crate::common::*;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub(crate) enum Setting<'src> {
   Shell(Shell<'src>),
+  ModuleExperiment,
 }
 
 #[derive(Debug, PartialEq)]

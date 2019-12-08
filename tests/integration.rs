@@ -267,12 +267,20 @@ test! {
 
 test! {
   name: alias_shadows_recipe,
-  justfile: "bar:\n  echo bar\nalias foo := bar\nfoo:\n  echo foo",
+  justfile: "
+    bar:
+      echo bar
+
+    alias foo := bar
+
+    foo:
+      echo foo
+  ",
   stderr: "
-    error: Alias `foo` defined on line 3 shadows recipe `foo` defined on line 4
+    error: Recipe `foo` conflicts with alias first defined on line 4
       |
-    3 | alias foo := bar
-      |       ^^^
+    6 | foo:
+      | ^^^
   ",
   status: EXIT_FAILURE,
 }
@@ -907,7 +915,7 @@ foo A B:
     ",
   args:     ("foo", "ONE", "TWO", "THREE"),
   stdout:   "",
-  stderr:   "error: Justfile does not contain recipe `THREE`.\n",
+  stderr:   "error: Justfile does not contain recipe `THREE`\n",
   status:   EXIT_FAILURE,
 }
 
@@ -931,7 +939,7 @@ foo A B='B':
     ",
   args:     ("foo", "ONE", "TWO", "THREE"),
   stdout:   "",
-  stderr:   "error: Justfile does not contain recipe `THREE`.\n",
+  stderr:   "error: Justfile does not contain recipe `THREE`\n",
   status:   EXIT_FAILURE,
 }
 
@@ -952,7 +960,7 @@ test! {
   justfile: "hello:",
   args:     ("foo"),
   stdout:   "",
-  stderr:   "error: Justfile does not contain recipe `foo`.\n",
+  stderr:   "error: Justfile does not contain recipe `foo`\n",
   status:   EXIT_FAILURE,
 }
 
@@ -961,7 +969,7 @@ test! {
   justfile: "hello:",
   args:     ("foo", "bar"),
   stdout:   "",
-  stderr:   "error: Justfile does not contain recipes `foo` or `bar`.\n",
+  stderr:   "error: Justfile does not contain recipe `foo`\n",
   status:   EXIT_FAILURE,
 }
 
@@ -1244,7 +1252,7 @@ a Z="\t z":
 "#,
   args:     ("hell"),
   stdout:   "",
-  stderr:   "error: Justfile does not contain recipe `hell`.\nDid you mean `hello`?\n",
+  stderr:   "error: Justfile does not contain recipe `hell`\nDid you mean `hello`?\n",
   status:   EXIT_FAILURE,
 }
 
@@ -1516,10 +1524,14 @@ test! {
 
 test! {
   name:     duplicate_variable,
-  justfile: "a := 'hello'\na := 'hello'\nfoo:",
+  justfile: "
+    a := 'hello'
+    a := 'hello'
+
+    foo:",
   args:     ("foo"),
   stdout:   "",
-  stderr:   "error: Variable `a` has multiple definitions
+  stderr:   "error: Variable `a` first defined on line 1 is redefined on line 2
   |
 2 | a := 'hello'
   | ^

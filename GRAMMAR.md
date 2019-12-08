@@ -13,12 +13,12 @@ BACKTICK   = `[^`\n\r]*`
 COMMENT    = #([^!].*)?$
 DEDENT     = emitted when indentation decreases
 EOF        = emitted at the end of the file
+ESCAPE     = \n | \r | \t | \" | \\
 INDENT     = emitted when indentation increases
-LINE       = emitted before a recipe line
 NAME       = [a-zA-Z_][a-zA-Z0-9_-]*
 NEWLINE    = \n|\r\n
 RAW_STRING = '[^'\r\n]*'
-STRING     = "[^"]*" # also processes \n \r \t \" \\ escapes
+STRING     = "(ESCAPE|[^"])*"
 TEXT       = recipe text, only matches in a recipe body
 ```
 
@@ -45,17 +45,19 @@ item          : recipe
               | export
               | setting
               | eol
+              | module
 
 eol           : NEWLINE
               | COMMENT NEWLINE
 
-alias         : 'alias' NAME ':=' NAME
+alias         : 'alias' NAME ':=' NAME eol
 
 assignment    : NAME ':=' expression eol
 
 export        : 'export' assignment
 
-setting       : 'set' 'shell' ':=' '[' string (',' string)* ','? ']'
+setting       : 'set' 'shell' ':=' '[' string (',' string)* ','? ']' eol
+              | 'set' 'module-experiment' ':=' true eol
 
 expression    : value '+' expression
               | value
@@ -73,7 +75,7 @@ string        : STRING
 sequence      : expression ',' sequence
               | expression ','?
 
-recipe        : '@'? NAME parameter* ('+' parameter)? ':' dependency* body?
+recipe        : '@'? NAME parameter* ('+' parameter)? ':' dependency* eol body?
 
 parameter     : NAME
               | NAME '=' value
@@ -83,8 +85,11 @@ dependency    : NAME
 
 body          : INDENT line+ DEDENT
 
-line          : LINE (TEXT | interpolation)+ NEWLINE
-              | NEWLINE
+line          : (TEXT | interpolation)* NEWLINE
 
 interpolation : '{{' expression '}}'
+
+module        : NAME '::' eol suite?
+
+suite         : INDENT item* DEDENT
 ```

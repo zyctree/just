@@ -3,11 +3,15 @@ use crate::common::*;
 #[derive(Debug, PartialEq)]
 pub(crate) struct Settings<'src> {
   pub(crate) shell: Option<setting::Shell<'src>>,
+  pub(crate) module_experiment: bool,
 }
 
 impl<'src> Settings<'src> {
   pub(crate) fn new() -> Settings<'src> {
-    Settings { shell: None }
+    Settings {
+      shell: None,
+      module_experiment: false,
+    }
   }
 
   pub(crate) fn shell_command(&self, config: &Config) -> Command {

@@ -474,7 +474,7 @@ impl Config {
   fn list(&self, justfile: Justfile) -> Result<(), i32> {
     // Construct a target to alias map.
     let mut recipe_aliases: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    for alias in justfile.aliases.values() {
+    for alias in justfile.root.aliases.values() {
       if alias.is_private() {
         continue;
       }
@@ -489,7 +489,7 @@ impl Config {
 
     let mut line_widths: BTreeMap<&str, usize> = BTreeMap::new();
 
-    for (name, recipe) in &justfile.recipes {
+    for (name, recipe) in &justfile.root.recipes {
       if recipe.private {
         continue;
       }
@@ -512,7 +512,7 @@ impl Config {
     let doc_color = self.color.stdout().doc();
     println!("Available recipes:");
 
-    for (name, recipe) in &justfile.recipes {
+    for (name, recipe) in &justfile.root.recipes {
       if recipe.private {
         continue;
       }
@@ -601,6 +601,7 @@ impl Config {
       eprintln!("Justfile contains no recipes.");
     } else {
       let summary = justfile
+        .root
         .recipes
         .iter()
         .filter(|&(_, recipe)| !recipe.private)

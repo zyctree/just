@@ -571,6 +571,10 @@ impl<'src> Lexer<'src> {
     if self.next_is('=') {
       self.advance()?;
       self.token(ColonEquals);
+    } else if self.next_is(':') {
+      self.advance()?;
+      self.token(ColonColon);
+      self.recipe_body_pending = false;
     } else {
       self.token(Colon);
       self.recipe_body_pending = true;
@@ -817,6 +821,7 @@ mod tests {
       BracketL => "[",
       BracketR => "]",
       Colon => ":",
+      ColonColon => "::",
       ColonEquals => ":=",
       Comma => ",",
       Eol => "\n",
@@ -965,6 +970,18 @@ mod tests {
     name:   eol_carriage_return_linefeed,
     text:   "\r\n",
     tokens: (Eol:"\r\n"),
+  }
+
+  test! {
+    name:   colon,
+    text:   ":",
+    tokens: (Colon)
+  }
+
+  test! {
+    name:   colon_colon,
+    text:   "::",
+    tokens: (ColonColon)
   }
 
   test! {
@@ -1377,10 +1394,11 @@ mod tests {
 
   test! {
     name: tokenize_recipe_interpolation_eof,
-    text: "foo: # more comments
- {{hello}}
-# another comment
-",
+    text: "
+      foo: # more comments
+       {{hello}}
+      # another comment
+    ",
     tokens: (
       Identifier:"foo",
       Colon,
@@ -1787,6 +1805,79 @@ mod tests {
     name:   brackets,
     text:   "][",
     tokens: (BracketR, BracketL),
+  }
+
+  test! {
+    name: indent_nested,
+    text: "
+      foo::
+        bar::
+          baz:
+    ",
+    tokens: (
+      Identifier:"foo",
+      ColonColon,
+      Eol,
+      Indent:"  ",
+      Identifier:"bar",
+      ColonColon,
+      Eol,
+      Indent:"    ",
+      Identifier:"baz",
+      Colon,
+      Eol,
+      Dedent,
+      Dedent,
+    ),
+  }
+
+  test! {
+    name: module_indent_indent_dedent_indent,
+    text: "
+      a::
+        b::
+          x := 'x'
+        r:
+    ",
+    tokens: (
+      Identifier:"a",
+      ColonColon,
+      Eol,
+      Indent:"  ",
+      Identifier:"b",
+      ColonColon,
+      Eol,
+      Indent:"    ",
+      Identifier:"x",
+      Whitespace:" ",
+      ColonEquals,
+      Whitespace:" ",
+      StringRaw:"'x'",
+      Eol,
+      Dedent,
+      Whitespace:"  ",
+      Identifier:"r",
+      Colon,
+      Eol,
+      Dedent,
+    ),
+  }
+
+  test! {
+    name: indent_comment,
+    text: "
+      foo::
+    # foo
+    ",
+    tokens: (
+      Indent:"  ",
+      Identifier:"foo",
+      ColonColon,
+      Eol,
+      Dedent,
+      Comment:"# foo",
+      Eol,
+    ),
   }
 
   error! {
