@@ -45,11 +45,22 @@ jobs:
         echo /usr/local/opt/gnu-tar/libexec/gnubin > $GITHUB_PATH
 
     - name: Cache Cargo
+      if: matrix.os != 'windows-2016'
       uses: actions/cache@v2
       with:
         path: |
           ~/.cargo/registry
           ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: Cache Cargo Windows
+      if: matrix.os == 'windows-2016'
+      uses: actions/cache@v2
+      with:
+        path: |
+          ~\.cargo\registry
+          ~\.cargo\git
           target
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
